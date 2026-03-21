@@ -2,12 +2,13 @@ version: '3.8'
 
 services:
   app:
-    image: ihmily/douyin-live-recorder:latest
+    build: .
+    image: douyin-live-recorder:local
     environment:
       - TERM=xterm-256color
     tty: true
     stdin_open: true
-    #build: .
+    shm_size: 1gb
     volumes:
       - ./config:/app/config
       - ./logs:/app/logs

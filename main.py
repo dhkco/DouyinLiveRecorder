@@ -1235,6 +1235,130 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                         logger.warning("FLV is not supported for h265 codec, use TS format instead")
                                         record_save_type = "TS"
 
+                                if use_browser_render and platform == '抖音直播':
+                                    xvfb_proc = None
+                                    chrome_proc = None
+                                    try:
+                                        xvfb_bin = shutil.which("Xvfb")
+                                        if not xvfb_bin:
+                                            raise FileNotFoundError("Xvfb not found in PATH")
+
+                                        chrome_bin = None
+                                        for candidate in ["chromium-browser", "chromium", "google-chrome", "google-chrome-stable"]:
+                                            chrome_bin = shutil.which(candidate)
+                                            if chrome_bin:
+                                                break
+                                        if not chrome_bin:
+                                            raise FileNotFoundError("Chromium/Chrome not found in PATH")
+
+                                        now = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
+                                        filename = anchor_name + f'_{title_in_name}' + now + ".mp4"
+                                        save_file_path = full_path + '/' + filename
+                                        print(f'\r{anchor_name} 准备开始浏览器渲染录制视频: {save_file_path}')
+
+                                        display_num = random.randint(1000, 9999)
+                                        display = f":{display_num}"
+
+                                        xvfb_proc = subprocess.Popen(
+                                            [xvfb_bin, display, "-screen", "0", "1920x1080x24", "-nolisten", "tcp"],
+                                            stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL,
+                                            startupinfo=get_startup_info(os_type)
+                                        )
+
+                                        chrome_env = os.environ.copy()
+                                        chrome_env["DISPLAY"] = display
+                                        if "XDG_RUNTIME_DIR" not in chrome_env:
+                                            chrome_env["XDG_RUNTIME_DIR"] = "/tmp"
+                                        chrome_user_data_dir = f"/tmp/dylr_chrome_{uuid.uuid4().hex}"
+
+                                        chrome_cmd = [
+                                            chrome_bin,
+                                            "--window-size=1920,1080",
+                                            "--window-position=0,0",
+                                            "--autoplay-policy=no-user-gesture-required",
+                                            "--no-sandbox",
+                                            "--disable-dev-shm-usage",
+                                            "--disable-gpu",
+                                            "--start-maximized",
+                                            "--kiosk",
+                                            "--start-fullscreen",
+                                            "--mute-audio",
+                                            f"--user-data-dir={chrome_user_data_dir}",
+                                            record_url
+                                        ]
+                                        chrome_proc = subprocess.Popen(
+                                            chrome_cmd,
+                                            env=chrome_env,
+                                            stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL,
+                                            startupinfo=get_startup_info(os_type)
+                                        )
+                                        time.sleep(8)
+
+                                        render_ffmpeg_command = [
+                                            'ffmpeg', "-y",
+                                            "-v", "verbose",
+                                            "-loglevel", "error",
+                                            "-hide_banner",
+                                            "-f", "x11grab",
+                                            "-video_size", "1920x1080",
+                                            "-framerate", "30",
+                                            "-i", f"{display}.0+0,0",
+                                            "-user_agent", user_agent,
+                                            "-protocol_whitelist", "rtmp,crypto,file,http,https,tcp,tls,udp,rtp,httpproxy",
+                                            "-rw_timeout", rw_timeout,
+                                            "-re", "-i", real_url,
+                                            "-c:v", "libx264",
+                                            "-preset", "veryfast",
+                                            "-pix_fmt", "yuv420p",
+                                            "-c:a", "aac",
+                                            "-b:a", "192k",
+                                            "-map", "0:v:0",
+                                            "-map", "1:a:0?",
+                                            "-shortest",
+                                            "-movflags", "+faststart",
+                                            save_file_path
+                                        ]
+
+                                        if proxy_address:
+                                            render_ffmpeg_command.insert(1, "-http_proxy")
+                                            render_ffmpeg_command.insert(2, proxy_address)
+
+                                        comment_end = check_subprocess(
+                                            record_name,
+                                            record_url,
+                                            render_ffmpeg_command,
+                                            "MP4",
+                                            custom_script
+                                        )
+
+                                        if comment_end:
+                                            return
+
+                                        count_time = time.time()
+                                        continue
+                                    except subprocess.CalledProcessError as e:
+                                        logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+                                        with max_request_lock:
+                                            error_count += 1
+                                            error_window.append(1)
+                                        continue
+                                    except Exception as e:
+                                        logger.error(f"浏览器渲染录制失败: {e}")
+                                        continue
+                                    finally:
+                                        if chrome_proc:
+                                            try:
+                                                chrome_proc.terminate()
+                                            except Exception:
+                                                pass
+                                        if xvfb_proc:
+                                            try:
+                                                xvfb_proc.terminate()
+                                            except Exception:
+                                                pass
+
                                 if only_audio_record or any(i in record_save_type for i in ['MP3', 'M4A']):
                                     try:
                                         now = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
@@ -1826,6 +1950,7 @@ while True:
     create_time_file = options.get(read_config_value(config, '录制设置', '生成时间字幕文件', "否"), False)
     is_run_script = options.get(read_config_value(config, '录制设置', '是否录制完成后执行自定义脚本', "否"), False)
     custom_script = read_config_value(config, '录制设置', '自定义脚本执行命令', "") if is_run_script else None
+    use_browser_render = options.get(read_config_value(config, '录制设置', '是否使用浏览器渲染录制(是/否)', "否"), False)
     enable_proxy_platform = read_config_value(
         config, '录制设置', '使用代理录制的平台(逗号分隔)',
         'tiktok, soop, pandalive, winktv, flextv, popkontv, twitch, liveme, showroom, chzzk, shopee, shp, youtu, faceit'
