@@ -21,6 +21,7 @@ import re
 import shutil
 import random
 import uuid
+import json
 from pathlib import Path
 import urllib.request
 from urllib.error import URLError, HTTPError
@@ -1271,6 +1272,16 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                         if "XDG_RUNTIME_DIR" not in chrome_env:
                                             chrome_env["XDG_RUNTIME_DIR"] = "/tmp"
                                         chrome_user_data_dir = f"/tmp/dylr_chrome_{uuid.uuid4().hex}"
+                                        chrome_default_dir = os.path.join(chrome_user_data_dir, "Default")
+                                        os.makedirs(chrome_default_dir, exist_ok=True)
+                                        chrome_prefs_path = os.path.join(chrome_default_dir, "Preferences")
+                                        chrome_prefs = {
+                                            "translate": {"enabled": False},
+                                            "intl": {"accept_languages": "zh-CN,zh,en-US,en"},
+                                            "profile": {"default_content_setting_values": {"notifications": 2}}
+                                        }
+                                        with open(chrome_prefs_path, "w", encoding="utf-8") as f:
+                                            json.dump(chrome_prefs, f, ensure_ascii=False)
 
                                         chrome_cmd = [
                                             chrome_bin,
@@ -1280,6 +1291,14 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             "--no-sandbox",
                                             "--disable-dev-shm-usage",
                                             "--disable-gpu",
+                                            "--lang=zh-CN",
+                                            "--disable-translate",
+                                            "--disable-features=Translate,TranslateUI",
+                                            "--disable-infobars",
+                                            "--no-first-run",
+                                            "--no-default-browser-check",
+                                            "--disable-notifications",
+                                            "--hide-scrollbars",
                                             "--start-maximized",
                                             "--kiosk",
                                             "--start-fullscreen",
