@@ -452,12 +452,12 @@ def check_subprocess(record_name: str, record_url: str, ffmpeg_command: list, sa
     return_code = process.returncode
     stop_time = time.strftime('%Y-%m-%d %H:%M:%S')
     if return_code == 0:
-        if converts_to_mp4 and save_type == 'TS':
+        if converts_to_mp4 and save_type in ('TS', 'FLV'):
             if split_video_by_time:
                 file_paths = utils.get_file_paths(os.path.dirname(save_file_path))
                 prefix = os.path.basename(save_file_path).rsplit('_', maxsplit=1)[0]
                 for path in file_paths:
-                    if prefix in path:
+                    if prefix in path and os.path.splitext(path)[-1].lower() in ('.ts', '.flv'):
                         threading.Thread(target=converts_mp4, args=(path, delete_origin_file)).start()
             else:
                 threading.Thread(target=converts_mp4, args=(save_file_path, delete_origin_file)).start()
@@ -1236,7 +1236,7 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                         logger.warning("FLV is not supported for h265 codec, use TS format instead")
                                         record_save_type = "TS"
 
-                                if use_browser_render and platform == '抖音直播':
+                                if use_browser_render and platform == '抖音直播' and record_save_type not in ('MP3', 'M4A', 'MP3音频', 'M4A音频'):
                                     xvfb_proc = None
                                     chrome_proc = None
                                     try:
@@ -1253,8 +1253,11 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             raise FileNotFoundError("Chromium/Chrome not found in PATH")
 
                                         now = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
-                                        filename = anchor_name + f'_{title_in_name}' + now + ".mp4"
-                                        save_file_path = full_path + '/' + filename
+                                        render_save_type = record_save_type if record_save_type in ("TS", "MP4", "MKV", "FLV") else "MP4"
+                                        ext_mapping = {"TS": "ts", "MP4": "mp4", "MKV": "mkv", "FLV": "flv"}
+                                        ext = ext_mapping.get(render_save_type, "mp4")
+                                        name_format = "_%03d" if split_video_by_time else ""
+                                        save_file_path = f"{full_path}/{anchor_name}_{title_in_name}{now}{name_format}.{ext}"
                                         print(f'\r{anchor_name} 准备开始浏览器渲染录制视频: {save_file_path}')
 
                                         display_num = random.randint(1000, 9999)
@@ -1324,10 +1327,32 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             "-video_size", "1920x1080",
                                             "-framerate", "30",
                                             "-i", f"{display}.0+0,0",
+                                        ]
+
+                                        if proxy_address:
+                                            render_ffmpeg_command.extend(["-http_proxy", proxy_address])
+
+                                        audio_input_options = [
                                             "-user_agent", user_agent,
                                             "-protocol_whitelist", "rtmp,crypto,file,http,https,tcp,tls,udp,rtp,httpproxy",
+                                            "-thread_queue_size", "1024",
+                                            "-analyzeduration", analyzeduration,
+                                            "-probesize", probesize,
+                                            "-fflags", "+discardcorrupt",
                                             "-rw_timeout", rw_timeout,
+                                        ]
+                                        headers = get_record_headers(platform, record_url)
+                                        if headers:
+                                            audio_input_options = ["-headers", headers] + audio_input_options
+
+                                        render_ffmpeg_command.extend(audio_input_options)
+                                        render_ffmpeg_command.extend([
                                             "-re", "-i", real_url,
+                                            "-reconnect_delay_max", "60",
+                                            "-reconnect_streamed", "-reconnect_at_eof",
+                                            "-max_muxing_queue_size", max_muxing_queue_size,
+                                            "-correct_ts_overflow", "1",
+                                            "-avoid_negative_ts", "1",
                                             "-c:v", "libx264",
                                             "-preset", "veryfast",
                                             "-pix_fmt", "yuv420p",
@@ -1336,19 +1361,45 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                             "-map", "0:v:0",
                                             "-map", "1:a:0?",
                                             "-shortest",
-                                            "-movflags", "+faststart",
-                                            save_file_path
-                                        ]
+                                        ])
 
-                                        if proxy_address:
-                                            render_ffmpeg_command.insert(1, "-http_proxy")
-                                            render_ffmpeg_command.insert(2, proxy_address)
+                                        if split_video_by_time:
+                                            segment_command = ["-f", "segment", "-segment_time", split_time, "-reset_timestamps", "1"]
+                                            if render_save_type == "MP4":
+                                                segment_command.extend([
+                                                    "-force_key_frames", f"expr:gte(t,n_forced*{split_time})",
+                                                    "-sc_threshold", "0",
+                                                    "-g", "60",
+                                                    "-keyint_min", "60",
+                                                    "-segment_format", "mp4",
+                                                    "-movflags", "+frag_keyframe+empty_moov",
+                                                ])
+                                            elif render_save_type == "TS":
+                                                segment_command.extend(["-segment_format", "mpegts"])
+                                            elif render_save_type == "MKV":
+                                                segment_command.extend(["-segment_format", "matroska"])
+                                            elif render_save_type == "FLV":
+                                                segment_command.extend(["-segment_format", "flv"])
+                                            else:
+                                                segment_command.extend(["-segment_format", "mp4"])
+                                            render_ffmpeg_command.extend(segment_command)
+                                        else:
+                                            if render_save_type == "MP4":
+                                                render_ffmpeg_command.extend(["-f", "mp4", "-movflags", "+faststart"])
+                                            elif render_save_type == "TS":
+                                                render_ffmpeg_command.extend(["-f", "mpegts"])
+                                            elif render_save_type == "MKV":
+                                                render_ffmpeg_command.extend(["-f", "matroska"])
+                                            elif render_save_type == "FLV":
+                                                render_ffmpeg_command.extend(["-f", "flv"])
+
+                                        render_ffmpeg_command.append(save_file_path)
 
                                         comment_end = check_subprocess(
                                             record_name,
                                             record_url,
                                             render_ffmpeg_command,
-                                            "MP4",
+                                            render_save_type,
                                             custom_script
                                         )
 
@@ -1478,6 +1529,11 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                                 record_finished = True
                                                 print(
                                                     f"\n{anchor_name} {time.strftime('%Y-%m-%d %H:%M:%S')} 直播录制完成\n")
+                                                if converts_to_mp4:
+                                                    threading.Thread(
+                                                        target=converts_mp4,
+                                                        args=(save_file_path, delete_origin_file)
+                                                    ).start()
 
                                             recording.discard(record_name)
                                         else:
@@ -1539,32 +1595,6 @@ def start_record(url_data: tuple, count_variable: int = -1) -> None:
                                         with max_request_lock:
                                             error_count += 1
                                             error_window.append(1)
-
-                                    try:
-                                        if converts_to_mp4:
-                                            seg_file_path = f"{full_path}/{anchor_name}_{title_in_name}{now}_%03d.mp4"
-                                            if split_video_by_time:
-                                                segment_video(
-                                                    save_file_path, seg_file_path,
-                                                    segment_format='mp4', segment_time=split_time,
-                                                    is_original_delete=delete_origin_file
-                                                )
-                                            else:
-                                                threading.Thread(
-                                                    target=converts_mp4,
-                                                    args=(save_file_path, delete_origin_file)
-                                                ).start()
-
-                                        else:
-                                            seg_file_path = f"{full_path}/{anchor_name}_{title_in_name}{now}_%03d.flv"
-                                            if split_video_by_time:
-                                                segment_video(
-                                                    save_file_path, seg_file_path,
-                                                    segment_format='flv', segment_time=split_time,
-                                                    is_original_delete=delete_origin_file
-                                                )
-                                    except Exception as e:
-                                        logger.error(f"转码失败: {e} ")
 
                                 elif record_save_type == "MKV":
                                     filename = anchor_name + f'_{title_in_name}' + now + ".mkv"
